@@ -18,7 +18,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: oculair/haystack
+  IMAGE_NAME: ${{ github.repository_owner }}/haystack
 
 jobs:
   build:
@@ -72,7 +72,7 @@ jobs:
         run: |
           echo "## 🚀 Hayhooks Image Built Successfully" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Image:** \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ env.REGISTRY }}/${{ github.repository_owner }}/haystack:latest\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Tags:" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
@@ -83,5 +83,5 @@ jobs:
           echo "\`\`\`yaml" >> $GITHUB_STEP_SUMMARY
           echo "services:" >> $GITHUB_STEP_SUMMARY
           echo "  hayhooks:" >> $GITHUB_STEP_SUMMARY
-          echo "    image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "    image: ${{ env.REGISTRY }}/${{ github.repository_owner }}/haystack:latest" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
