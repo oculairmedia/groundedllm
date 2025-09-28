@@ -2,6 +2,8 @@
 
 This is a pre-built, turnkey implementation of an AI agent grounded with search, excerpt, and extract tools to reduce hallucination and provide correct and complete answers to questions.  Jina has an [excellent blog post](https://jina.ai/news/a-practical-guide-to-implementing-deepsearch-deepresearch) on the details.
 
+> CI note: pushing to `main` triggers the workflows that publish refreshed images.
+
 If you have the API keys and Docker Compose, you should be able to go to http://localhost:3000 and have it Just Work.  It runs fine on a Macbook Air with 8 GB memory.
 
 [SearXNG](https://docs.searxng.org) is included as the search engine by default, but I recommend you set up one of the included Search APIs and use those, as they claim to have higher quality search results.
