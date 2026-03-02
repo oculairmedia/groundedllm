@@ -6,7 +6,7 @@ in the shared Weaviate document store. Any Letta agent can then search
 this store via the search_documents pipeline/tool.
 
 Flow:
-  text + metadata → DocumentSplitter → OpenAIDocumentEmbedder → WeaviateDocumentWriter
+  text + metadata → DocumentSplitter → AddChunkMetadata → OpenAIDocumentEmbedder → WeaviateDocumentWriter
 """
 
 import json
@@ -15,34 +15,28 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from hayhooks.server.utils.base_pipeline_wrapper import BasePipelineWrapper
-from haystack import Document, Pipeline
+from haystack import Document, Pipeline, component
 from haystack.components.preprocessors import DocumentSplitter
 from haystack.components.embedders import OpenAIDocumentEmbedder
 from haystack.utils import Secret
-from haystack_integrations.document_stores.weaviate import WeaviateDocumentStore
+from resources.docstore import get_document_store
 from haystack.components.writers import DocumentWriter
 from loguru import logger as log
 
 
-def get_document_store() -> WeaviateDocumentStore:
-    """Create a WeaviateDocumentStore connected to the shared docstore."""
-    weaviate_url = os.getenv("WEAVIATE_URL", "http://docstore-weaviate:8080")
-    collection = os.getenv("WEAVIATE_COLLECTION", "Documents")
-    return WeaviateDocumentStore(
-        url=weaviate_url,
-        collection_settings={
-            "class": collection,
-            "properties": [
-                {"name": "content", "dataType": ["text"]},
-                {"name": "source_filename", "dataType": ["text"]},
-                {"name": "source_room_id", "dataType": ["text"]},
-                {"name": "source_sender", "dataType": ["text"]},
-                {"name": "chunk_index", "dataType": ["int"]},
-                {"name": "total_chunks", "dataType": ["int"]},
-                {"name": "ingested_at", "dataType": ["text"]},
-            ],
-        },
-    )
+@component
+class AddChunkMetadata:
+    """Add stable chunk position metadata to split documents."""
+
+    @component.output_types(documents=list[Document])
+    def run(self, documents: list[Document]):
+        total_chunks = len(documents)
+        for idx, doc in enumerate(documents):
+            doc.meta["chunk_index"] = idx
+            doc.meta["total_chunks"] = total_chunks
+        return {"documents": documents}
+
+
 
 
 def create_pipeline() -> Pipeline:
@@ -51,25 +45,29 @@ def create_pipeline() -> Pipeline:
     api_base = os.getenv("HAYHOOKS_EMBEDDING_API_BASE", "http://100.81.139.20:11450/v1")
 
     splitter = DocumentSplitter(
-        split_by="sentence",
-        split_length=5,
-        split_overlap=1,
+        split_by="word",
+        split_length=512,
+        split_overlap=64,
     )
+    chunk_metadata = AddChunkMetadata()
 
     embedder = OpenAIDocumentEmbedder(
         api_key=Secret.from_env_var("OPENAI_API_KEY"),
         api_base_url=api_base,
         model=embedding_model,
+        batch_size=128,  # vLLM handles large batches; reduce round-trips
     )
 
     writer = DocumentWriter(document_store=get_document_store())
 
     pipe = Pipeline()
     pipe.add_component("splitter", splitter)
+    pipe.add_component("chunk_metadata", chunk_metadata)
     pipe.add_component("embedder", embedder)
     pipe.add_component("writer", writer)
 
-    pipe.connect("splitter.documents", "embedder.documents")
+    pipe.connect("splitter.documents", "chunk_metadata.documents")
+    pipe.connect("chunk_metadata.documents", "embedder.documents")
     pipe.connect("embedder.documents", "writer.documents")
 
     return pipe
@@ -155,7 +153,7 @@ class PipelineWrapper(BasePipelineWrapper):
 
             except Exception as e:
                 err_str = str(e).lower()
-                if attempt == 0 and ("closed" in err_str or "connect" in err_str):
+                if attempt == 0 and ("closed" in err_str or "connect" in err_str or "schema" in err_str or "graphql" in err_str):
                     log.warning(f"Weaviate connection stale, rebuilding pipeline: {e}")
                     self.pipeline = create_pipeline()
                     continue
