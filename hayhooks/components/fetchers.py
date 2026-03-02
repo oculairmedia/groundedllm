@@ -1,5 +1,7 @@
 from typing import Any, Dict, List, Optional, Tuple
 
+import os
+
 import httpx
 from hayhooks import log as logger
 from haystack import component
@@ -41,6 +43,8 @@ class ContentFetcherResolver:
             default_config = {"name": "default", "patterns": ["*"], "domains": ["*"], "priority": 999}
             fetcher_configs = [
                 # scrapling_config,
+                {"name": "crawl4ai", "patterns": ["*"], "domains": ["*"], "priority": 1},
+                # {"name": "jina", "patterns": ["*"], "domains": ["*"], "priority": 2},
                 default_config,
             ]
 
@@ -58,11 +62,14 @@ class ContentFetcherResolver:
         # Initialize Scrapling fetcher
         self.fetchers["scrapling"] = ScraplingLinkContentFetcher()
 
-        # Initialize Jina fetcher
-        self.fetchers["jina"] = JinaLinkContentFetcher()
+        # Initialize Jina fetcher (disabled - balance exhausted)
+        # self.fetchers["jina"] = JinaLinkContentFetcher()
 
         # Initialize default fetcher
         self.fetchers["default"] = HaystackLinkContentFetcher()
+
+        # Initialize Crawl4AI fetcher
+        self.fetchers["crawl4ai"] = Crawl4AILinkContentFetcher()
 
     def _match_url_pattern(self, url: str, pattern: str) -> bool:
         """Check if URL matches a given pattern."""
@@ -527,5 +534,128 @@ class JinaLinkContentFetcher:
             # Create ByteStream and metadata
             stream = ByteStream(data=content.encode("utf-8"))
             metadata = {"content_type": content_type, "url": url}
+
+            return metadata, stream
+
+
+@component
+class Crawl4AILinkContentFetcher:
+    """
+    A component that fetches content from URLs using a Crawl4AI engine instance.
+    Returns clean markdown extracted from web pages.
+    """
+
+    def __init__(
+        self,
+        timeout: int = 30,
+        retry_attempts: int = 2,
+        raise_on_failure: bool = False,
+    ):
+        """
+        Initialize the Crawl4AILinkContentFetcher.
+
+        Args:
+            timeout: The timeout for the HTTP request in seconds.
+            retry_attempts: The number of retry attempts for failed requests.
+            raise_on_failure: Whether to raise an exception if fetching fails.
+        """
+        self.timeout = timeout
+        self.retry_attempts = retry_attempts
+        self.raise_on_failure = raise_on_failure
+        self.base_url = os.environ.get("CRAWL4AI_BASE_URL", "http://192.168.50.90:11235")
+        self._available: Optional[bool] = None
+        self._failure_count = 0
+
+    def is_available(self) -> bool:
+        """Check if Crawl4AI engine is reachable."""
+        if self._available is not None:
+            return self._available
+
+        if self._failure_count >= 3:
+            self._available = False
+            return False
+
+        self._available = True
+        return True
+
+    @component.output_types(streams=List[ByteStream])
+    def run(self, urls: List[str]):
+        """
+        Fetch content from URLs using Crawl4AI engine.
+
+        Args:
+            urls: A list of URLs to fetch content from.
+
+        Returns:
+            A dictionary with a "streams" key containing a list of ByteStream objects.
+        """
+        if not self.is_available():
+            if self.raise_on_failure:
+                raise RuntimeError("Crawl4AI is not available")
+            return {"streams": []}
+
+        streams = []
+        for url in urls:
+            metadata, stream = self._fetch_with_retries(url)
+            if metadata and stream:
+                stream.meta.update(metadata)
+                stream.mime_type = stream.meta.get("content_type", None)
+                streams.append(stream)
+                self._failure_count = 0
+
+        return {"streams": streams}
+
+    def _fetch_with_retries(self, url: str) -> Tuple[Optional[Dict[str, str]], Optional[ByteStream]]:
+        """Fetch content from a URL with retry logic."""
+        attempt = 0
+
+        while attempt <= self.retry_attempts:
+            try:
+                return self._fetch(url)
+            except Exception as e:
+                attempt += 1
+                if attempt <= self.retry_attempts:
+                    import time
+                    time.sleep(min(2 * 2 ** (attempt - 1), 10))
+                else:
+                    logger.warning(
+                        f"Failed to fetch {url} using Crawl4AI after {self.retry_attempts} attempts: {str(e)}"
+                    )
+                    self._failure_count += 1
+                    if self._failure_count >= 3:
+                        self._available = False
+                    break
+
+        return None, None
+
+    def _fetch(self, url: str) -> Tuple[Dict[str, str], ByteStream]:
+        """
+        Fetch content from a URL using Crawl4AI's /md endpoint (POST).
+
+        Returns clean markdown content extracted from the page.
+        """
+        endpoint = f"{self.base_url}/md"
+
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(endpoint, json={"url": url, "f": "fit"})
+
+            if response.status_code != 200:
+                logger.error(
+                    f"Crawl4AI failure for url {url} status_code={response.status_code} text={response.text[:200]}"
+                )
+                raise RuntimeError(f"HTTP {response.status_code}: Crawl4AI failed")
+
+            data = response.json()
+            content = data.get("markdown", "")
+
+            if not content or not content.strip():
+                raise RuntimeError(f"Crawl4AI returned empty content for {url}")
+
+            stream = ByteStream(data=content.encode("utf-8"))
+            metadata = {
+                "content_type": "text/markdown",
+                "url": url,
+                "fetcher": "crawl4ai",
+            }
 
             return metadata, stream

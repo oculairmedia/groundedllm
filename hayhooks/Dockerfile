@@ -13,7 +13,8 @@ COPY . /app
 
 # Install the application dependencies.
 WORKDIR /app
-RUN uv sync --frozen --no-cache
+RUN uv sync --frozen --no-cache && uv pip install weaviate-haystack weaviate-client nltk
+RUN /app/.venv/bin/python -c "import nltk; nltk.download('punkt_tab')"
 
 # Install the browser dependencies for stealthy fetch
 #RUN uv run scrapling install

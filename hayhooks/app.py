@@ -30,6 +30,7 @@ from components.google.google_oauth import GoogleOAuth
 with LazyImport("Run 'pip install \"mcp\"' to install MCP.") as mcp_import:
     from mcp.server import Server
     from mcp.server.sse import SseServerTransport
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
     from mcp.types import EmbeddedResource, ImageContent, TextContent, Tool
 
 ###########
@@ -255,9 +256,31 @@ async def handle_sse(request: Request) -> Response:
     return Response(status_code=200, media_type="text/event-stream")
 
 
+# Streamable HTTP transport for MCP (Letta-compatible)
+mcp_http_session_manager = StreamableHTTPSessionManager(
+    app=mcp_server,
+    event_store=None,
+    json_response=True,
+    stateless=True,
+)
+_mcp_http_started = False
+_mcp_http_cm = None
+
+
+async def handle_mcp_http(scope, receive, send):
+    global _mcp_http_started, _mcp_http_cm
+    if not _mcp_http_started:
+        _mcp_http_cm = mcp_http_session_manager.run()
+        await _mcp_http_cm.__aenter__()
+        _mcp_http_started = True
+        log.info("Streamable HTTP MCP session manager started at /mcp")
+    await mcp_http_session_manager.handle_request(scope, receive, send)
+
+
 # Add MCP routes directly to the main Hayhooks app
 hayhooks.add_route("/sse", handle_sse)
 hayhooks.mount("/messages", mcp_sse.handle_post_message)
+hayhooks.mount("/mcp", handle_mcp_http)
 # --- End MCP Server Integration ---
 
 # --- Google OAuth2 Integration ---
